@@ -20,30 +20,12 @@ import { useRhythmix } from "../hooks/useRhythmix";
 const { width, height } = Dimensions.get("window");
 const COLUMN_WIDTH = width / 3;
 const NOTE_SIZE = 50;
-const BASE_BPM = 120;
-const BEATS_TO_SHOW = 8; // Increased from 4 to show more notes ahead
-const BPM_SCALE_FACTOR = 0.2;
-
-// Dynamic timing calculations
-const calculateTimings = (bpm: number) => {
-  const msPerBeat = (60 / bpm) * 1000 * BPM_SCALE_FACTOR;
-  return {
-    noteSpeed: msPerBeat * BEATS_TO_SHOW,
-    previewTime: msPerBeat * BEATS_TO_SHOW,
-    spawnOffset: msPerBeat * 2,
-    perfectThreshold: msPerBeat * 0.15, // Increased window
-    goodThreshold: msPerBeat * 0.25, // Increased window
-  };
-};
-
-// Initial timings with base BPM
-const BASE_TIMINGS = calculateTimings(BASE_BPM);
-let NOTE_SPEED = BASE_TIMINGS.noteSpeed;
-let PREVIEW_TIME = BASE_TIMINGS.previewTime;
-let SPAWN_OFFSET = BASE_TIMINGS.spawnOffset;
-let PERFECT_THRESHOLD = BASE_TIMINGS.perfectThreshold;
-let GOOD_THRESHOLD = BASE_TIMINGS.goodThreshold;
+const NOTE_SPEED = 1500;
+const PREVIEW_TIME = NOTE_SPEED;
+const SPAWN_OFFSET = 2000;
 const BEAT_LINE_Y = height * 0.8;
+const PERFECT_THRESHOLD = 50;
+const GOOD_THRESHOLD = 100;
 
 // Modern neon color scheme
 const COLORS = {
@@ -145,7 +127,6 @@ const GameScreen: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [hitFeedback, setHitFeedback] = useState<HitFeedback[]>([]);
-  const [currentBPM, setCurrentBPM] = useState(BASE_BPM);
 
   const gameTime = useSharedValue(0);
   const activeNotes = useSharedValue(0);
@@ -180,18 +161,8 @@ const GameScreen: React.FC = () => {
 
       const currentTime = gameTime.value;
       const columnNotes = notes
-        .filter(
-          (note) =>
-            note.column === column &&
-            note.active &&
-            !note.hit &&
-            Math.abs(note.startTime - currentTime) <= GOOD_THRESHOLD, // Only consider notes within hit window
-        )
-        .sort(
-          (a, b) =>
-            Math.abs(a.startTime - currentTime) -
-            Math.abs(b.startTime - currentTime),
-        );
+        .filter((note) => note.column === column && note.active && !note.hit)
+        .sort((a, b) => a.startTime - b.startTime);
 
       if (columnNotes.length === 0) return;
 
@@ -207,7 +178,6 @@ const GameScreen: React.FC = () => {
       }
 
       if (hitResult) {
-        const hitTimestamp = Date.now();
         setScore((prev) => prev + hitResult!.score);
         setCombo((prev) => prev + 1);
         setHitFeedback((prev) => [
@@ -218,7 +188,7 @@ const GameScreen: React.FC = () => {
               hitResult!.type === "PERFECT"
                 ? COLORS.feedback.perfect
                 : COLORS.feedback.good,
-            timestamp: hitTimestamp,
+            timestamp: Date.now(),
           },
         ]);
 
@@ -240,26 +210,6 @@ const GameScreen: React.FC = () => {
       const asset = require("../assets/tracks/Heartbeat_Racer.mp3");
       const { sound } = await Audio.Sound.createAsync(asset);
       soundRef.current = sound;
-
-      // Update timings based on song BPM
-      const bpm = result.metadata.bpm;
-      setCurrentBPM(bpm);
-      const timings = calculateTimings(bpm);
-
-      NOTE_SPEED = timings.noteSpeed;
-      PREVIEW_TIME = timings.previewTime;
-      SPAWN_OFFSET = timings.spawnOffset;
-      PERFECT_THRESHOLD = timings.perfectThreshold;
-      GOOD_THRESHOLD = timings.goodThreshold;
-
-      console.log("Game timings:", {
-        bpm,
-        noteSpeed: NOTE_SPEED,
-        previewTime: PREVIEW_TIME,
-        spawnOffset: SPAWN_OFFSET,
-        perfectThreshold: PERFECT_THRESHOLD,
-        goodThreshold: GOOD_THRESHOLD,
-      });
 
       const gameNotes = result.notes
         .sort((a, b) => a.time - b.time)
@@ -343,11 +293,6 @@ const GameScreen: React.FC = () => {
         Game Status: {isPlaying ? "Playing" : "Stopped"}
         {"\n"}
         Game Time: {Math.floor(gameTime.value)}ms{"\n"}
-        BPM: {currentBPM}
-        {"\n"}
-        Note Speed: {NOTE_SPEED}ms{"\n"}
-        Perfect Window: ±{PERFECT_THRESHOLD}ms{"\n"}
-        Good Window: ±{GOOD_THRESHOLD}ms{"\n"}
         Active Notes: {activeNotes.value}
         {"\n"}
         Total Notes: {notes.length}
@@ -361,7 +306,7 @@ const GameScreen: React.FC = () => {
         .filter((feedback) => Date.now() - feedback.timestamp < 500)
         .map((feedback, index) => (
           <Animated.Text
-            key={`${feedback.timestamp}-${index}`} // Add index to make key unique
+            key={feedback.timestamp}
             style={[styles.hitFeedbackText, { color: feedback.color }]}
           >
             {feedback.text}
@@ -398,6 +343,7 @@ const GameScreen: React.FC = () => {
           </TouchableOpacity>
         )}
       </View>
+
       <View style={styles.scoreContainer}>
         <Text style={styles.scoreText}>Score: {score}</Text>
         <Text style={styles.comboText}>Combo: {combo}x</Text>
