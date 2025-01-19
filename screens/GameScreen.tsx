@@ -20,29 +20,23 @@ import { useRhythmix } from "../hooks/useRhythmix";
 const { width, height } = Dimensions.get("window");
 const COLUMN_WIDTH = width / 3;
 const NOTE_SIZE = 50;
-const BASE_BPM = 120;
-const BEATS_TO_SHOW = 8; // Increased from 4 to show more notes ahead
-const BPM_SCALE_FACTOR = 0.2;
+// No artificial constants - we'll use the actual song timing
 
-// Dynamic timing calculations
-const calculateTimings = (bpm: number) => {
-  const msPerBeat = (60 / bpm) * 1000 * BPM_SCALE_FACTOR;
-  return {
-    noteSpeed: msPerBeat * BEATS_TO_SHOW,
-    previewTime: msPerBeat * BEATS_TO_SHOW,
-    spawnOffset: msPerBeat * 2,
-    perfectThreshold: msPerBeat * 0.15, // Increased window
-    goodThreshold: msPerBeat * 0.25, // Increased window
-  };
+// Dynamic timing calculations based on song BPM
+// Fixed timing windows to match server data
+const GAME_TIMINGS = {
+  NOTE_SPEED: 1000, // 1 second travel time
+  PREVIEW_TIME: 1000, // Show notes 1 second ahead
+  PERFECT_WINDOW: 50, // ±50ms for perfect
+  GOOD_WINDOW: 100, // ±100ms for good
 };
 
-// Initial timings with base BPM
-const BASE_TIMINGS = calculateTimings(BASE_BPM);
-let NOTE_SPEED = BASE_TIMINGS.noteSpeed;
-let PREVIEW_TIME = BASE_TIMINGS.previewTime;
-let SPAWN_OFFSET = BASE_TIMINGS.spawnOffset;
-let PERFECT_THRESHOLD = BASE_TIMINGS.perfectThreshold;
-let GOOD_THRESHOLD = BASE_TIMINGS.goodThreshold;
+// These will be set when the song loads
+let NOTE_SPEED = 0;
+let PREVIEW_TIME = 0;
+let SPAWN_OFFSET = 0;
+let PERFECT_THRESHOLD = 0;
+let GOOD_THRESHOLD = 0;
 const BEAT_LINE_Y = height * 0.8;
 
 // Modern neon color scheme
@@ -73,6 +67,8 @@ interface GameNote {
   startTime: number;
   active: boolean;
   hit: boolean;
+  strength: number; // Note strength from server (0-1)
+  confidence: number; // Note confidence from server (0-1)
 }
 
 interface HitResult {
@@ -91,47 +87,37 @@ interface NoteProps {
   onMiss: (id: number) => void;
 }
 
-const Note: React.FC<NoteProps> = ({ note, onMiss }) => {
-  const translateY = useSharedValue(-NOTE_SIZE);
-  const opacity = useSharedValue(1);
+// Much simpler note that just shows position based on time
+const Note: React.FC<NoteProps> = ({ note }) => {
+  const currentTime = useSharedValue(0);
+  const startPosition = -NOTE_SIZE;
+  const endPosition = BEAT_LINE_Y;
 
+  // Update time every frame
   useEffect(() => {
-    if (note.active) {
-      translateY.value = -NOTE_SIZE;
-      opacity.value = 1;
-
-      translateY.value = withTiming(
-        BEAT_LINE_Y,
-        {
-          duration: NOTE_SPEED,
-          easing: Easing.linear,
-        },
-        (finished) => {
-          if (finished) {
-            runOnJS(onMiss)(note.id);
-          }
-        },
-      );
-    }
-  }, [note.active]);
+    const interval = setInterval(() => {
+      currentTime.value = Date.now();
+    }, 16);
+    return () => clearInterval(interval);
+  }, []);
 
   const animatedStyle = useAnimatedStyle(() => {
+    // Calculate progress based on exact server time
+    const timeProgress = (currentTime.value - note.startTime) / 1000;
+
+    // Linear interpolation from start to end position
+    const position =
+      startPosition + timeProgress * (endPosition - startPosition);
+
     return {
-      transform: [{ translateY: translateY.value }],
-      opacity: opacity.value,
       position: "absolute",
-      width: NOTE_SIZE * 2.5,
-      height: NOTE_SIZE / 1.2,
-      left: (COLUMN_WIDTH - NOTE_SIZE * 2.5) / 2,
+      width: NOTE_SIZE * 2,
+      height: NOTE_SIZE,
+      left: (COLUMN_WIDTH - NOTE_SIZE * 2) / 2,
+      transform: [{ translateY: position }],
       backgroundColor: Object.values(COLORS.primary)[note.column],
-      borderWidth: 2,
-      borderColor: "#FFFFFF",
-      borderRadius: NOTE_SIZE / 8,
-      shadowColor: Object.values(COLORS.primary)[note.column],
-      shadowOffset: { width: 0, height: 0 },
-      shadowOpacity: 0.8,
-      shadowRadius: 10,
-      elevation: 8,
+      borderRadius: 4,
+      opacity: timeProgress > 1 ? 0 : 1, // Fade out after passing beat line
     };
   });
 
@@ -145,13 +131,15 @@ const GameScreen: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [hitFeedback, setHitFeedback] = useState<HitFeedback[]>([]);
-  const [currentBPM, setCurrentBPM] = useState(BASE_BPM);
+  const [currentBPM, setCurrentBPM] = useState(0);
 
   const gameTime = useSharedValue(0);
   const activeNotes = useSharedValue(0);
 
   const soundRef = useRef<Audio.Sound | null>(null);
   const nextNoteId = useRef(0);
+
+  // Using real BPM timing, no scaling needed
 
   const { loading, analyzeTestTrack } = useRhythmix({
     difficulty: 5,
@@ -185,7 +173,7 @@ const GameScreen: React.FC = () => {
             note.column === column &&
             note.active &&
             !note.hit &&
-            Math.abs(note.startTime - currentTime) <= GOOD_THRESHOLD, // Only consider notes within hit window
+            Math.abs(note.startTime - currentTime) <= GOOD_THRESHOLD,
         )
         .sort(
           (a, b) =>
@@ -241,35 +229,55 @@ const GameScreen: React.FC = () => {
       const { sound } = await Audio.Sound.createAsync(asset);
       soundRef.current = sound;
 
-      // Update timings based on song BPM
-      const bpm = result.metadata.bpm;
-      setCurrentBPM(bpm);
-      const timings = calculateTimings(bpm);
+      // Just store BPM for reference
+      setCurrentBPM(result.metadata.bpm);
 
-      NOTE_SPEED = timings.noteSpeed;
-      PREVIEW_TIME = timings.previewTime;
-      SPAWN_OFFSET = timings.spawnOffset;
-      PERFECT_THRESHOLD = timings.perfectThreshold;
-      GOOD_THRESHOLD = timings.goodThreshold;
+      // Use fixed gameplay timings
+      NOTE_SPEED = GAME_TIMINGS.NOTE_SPEED;
+      PREVIEW_TIME = GAME_TIMINGS.PREVIEW_TIME;
+      PERFECT_THRESHOLD = GAME_TIMINGS.PERFECT_WINDOW;
+      GOOD_THRESHOLD = GAME_TIMINGS.GOOD_WINDOW;
 
-      console.log("Game timings:", {
-        bpm,
+      console.log("Game Setup:", {
+        noteTimes: result.notes.slice(0, 5).map((n) => n.time),
         noteSpeed: NOTE_SPEED,
         previewTime: PREVIEW_TIME,
-        spawnOffset: SPAWN_OFFSET,
-        perfectThreshold: PERFECT_THRESHOLD,
-        goodThreshold: GOOD_THRESHOLD,
       });
 
-      const gameNotes = result.notes
-        .sort((a, b) => a.time - b.time)
-        .map((note) => ({
-          id: nextNoteId.current++,
-          column: note.column,
-          startTime: note.time + SPAWN_OFFSET,
-          active: false,
-          hit: false,
-        }));
+      // Log first few notes to verify timing
+      const firstFewNotes = result.notes.slice(0, 5);
+      console.log(
+        "First notes timing:",
+        firstFewNotes.map((note) => ({
+          time: note.time,
+          strength: note.strength,
+          confidence: note.confidence,
+        })),
+      );
+
+      const validationChecks = {
+        noteSpeedCheck: NOTE_SPEED > 1000 && NOTE_SPEED < 10000,
+        previewTimeCheck: PREVIEW_TIME > 1000 && PREVIEW_TIME < 10000,
+        spawnOffsetCheck: SPAWN_OFFSET > 200 && SPAWN_OFFSET < 5000,
+        thresholdCheck: PERFECT_THRESHOLD < GOOD_THRESHOLD,
+      };
+
+      console.log("Timing validation:", validationChecks);
+
+      if (!Object.values(validationChecks).every((check) => check)) {
+        console.warn("Some timing values may be outside expected ranges!");
+      }
+
+      // Use notes exactly as they come from the server
+      const gameNotes = result.notes.map((note) => ({
+        id: nextNoteId.current++,
+        column: note.column,
+        startTime: note.time, // Exact time from server
+        active: false,
+        hit: false,
+        strength: note.strength,
+        confidence: note.confidence,
+      }));
 
       setNotes(gameNotes);
       setIsReady(true);
@@ -284,9 +292,9 @@ const GameScreen: React.FC = () => {
       const updatedNotes = prevNotes.map((note) => ({
         ...note,
         active:
-          !note.hit &&
-          currentTime >= note.startTime - PREVIEW_TIME &&
-          currentTime <= note.startTime + 500,
+          !note.hit && // Not already hit
+          currentTime >= note.startTime - GAME_TIMINGS.PREVIEW_TIME && // Within preview window
+          currentTime <= note.startTime + 200, // Small window after beat for cleanup
       }));
 
       activeNotes.value = updatedNotes.filter((n) => n.active).length;
@@ -361,7 +369,7 @@ const GameScreen: React.FC = () => {
         .filter((feedback) => Date.now() - feedback.timestamp < 500)
         .map((feedback, index) => (
           <Animated.Text
-            key={`${feedback.timestamp}-${index}`} // Add index to make key unique
+            key={`${feedback.timestamp}-${index}`}
             style={[styles.hitFeedbackText, { color: feedback.color }]}
           >
             {feedback.text}
